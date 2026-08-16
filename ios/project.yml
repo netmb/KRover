@@ -1,0 +1,57 @@
+name: KRover
+options:
+  bundleIdPrefix: de.krover
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+packages:
+  MapLibre:
+    url: https://github.com/maplibre/maplibre-gl-native-distribution
+    from: 6.28.0
+targets:
+  KRover:
+    type: application
+    platform: iOS
+    sources:
+      - path: KRover
+    dependencies:
+      - package: MapLibre
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.katasterrover.app
+        PRODUCT_NAME: KRover
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: KRover
+        INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: Die App verbindet sich mit dem KRover und überträgt GNSS- sowie SAPOS-Korrekturdaten.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: Die Position wird zur Flurstückssuche, Navigation und für SAPOS-VRS verwendet.
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  KRoverTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: KRoverTests
+    dependencies:
+      - target: KRover
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.krover.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  KRover:
+    build:
+      targets:
+        KRover: all
+        KRoverTests: [test]
+    test:
+      targets:
+        - KRoverTests

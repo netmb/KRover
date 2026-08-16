@@ -1,0 +1,16 @@
+.DS_Store
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+ios/KRover.xcodeproj/
+ios/.derived-device/
+firmware/.pio/
+.venv/
+*.log
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.pfx
+*.xcarchive/
+GNSS-Rover App UI-Redesign/
