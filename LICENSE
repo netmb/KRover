@@ -1,0 +1,28 @@
+PolyForm Noncommercial License 1.0.0
+
+SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
+The license terms are available at:
+https://polyformproject.org/licenses/noncommercial/1.0.0
+
+Required Notice: Copyright 2026 netmb.
+Required Notice: Commercial or business use requires a separate written license from netmb.
+
+Commercial Licensing
+
+Commercial, professional, or other business use is not granted by this
+license. To request a separate commercial license, contact netmb through:
+https://github.com/netmb
+
+Scope
+
+This license applies only to material in this repository for which netmb is
+the rights holder.
+
+Third-Party Material
+
+Third-party software, libraries, images, trademarks, and other material are
+not licensed under the PolyForm Noncommercial License. They remain subject to
+the rights and license terms of their respective owners. Nothing in this
+license limits rights granted under a third-party license. See
+THIRD_PARTY_NOTICES.md for the software dependencies used by this project.

@@ -225,3 +225,20 @@ KROVER_INTEGRATION_PARCEL_ID='...' xcodebuild -project KRover.xcodeproj \
 
 Das BLE-Datenformat und die verwendeten Characteristics sind in
 [`docs/ble-protocol.md`](docs/ble-protocol.md) dokumentiert.
+
+## Lizenz
+
+KRover ist unter der
+[PolyForm Noncommercial License 1.0.0](LICENSE) verfügbar. Private und andere
+nichtkommerzielle Nutzung ist im Rahmen dieser Lizenz erlaubt. Kommerzielle
+oder gewerbliche Nutzung erfordert vorab eine separate schriftliche Lizenz von
+[`netmb`](https://github.com/netmb).
+
+Das Projekt ist damit öffentlich einsehbar (source available), aber keine Open-
+Source-Software im Sinne der OSI-Definition.
+
+Abhängigkeiten und sonstiges Material Dritter sind davon ausgenommen und
+behalten ihre jeweiligen Lizenzen. Details stehen in den
+[Drittanbieter-Hinweisen](THIRD_PARTY_NOTICES.md). Bei der Weitergabe
+kompilierter App- oder Firmware-Binaries müssen zusätzlich die dort genannten
+Lizenzbedingungen erfüllt werden.
