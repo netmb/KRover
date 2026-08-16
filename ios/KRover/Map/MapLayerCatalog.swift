@@ -29,6 +29,8 @@ enum MapBackgroundLayer: String, CaseIterable, Identifiable {
 }
 
 enum NRWMapLayerCatalog {
+    static let precisionMaximumZoomLevel = 25.5
+    static let dopNativeMaximumZoomLevel = 22.0
     static let dopSourceIdentifier = "nrw-dop-rgb-source"
     static let dopLayerIdentifier = "nrw-dop-rgb-layer"
 

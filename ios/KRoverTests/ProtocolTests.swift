@@ -307,9 +307,36 @@ final class ProtocolTests: XCTestCase {
 
     func testMapLayerCatalogProvidesExtensibleDOPBackground() {
         XCTAssertEqual(MapBackgroundLayer.allCases, [.cadastre, .aerialDOP])
+        XCTAssertEqual(NRWMapLayerCatalog.precisionMaximumZoomLevel, 25.5)
+        XCTAssertGreaterThan(
+            NRWMapLayerCatalog.precisionMaximumZoomLevel,
+            NRWMapLayerCatalog.dopNativeMaximumZoomLevel
+        )
         XCTAssertTrue(NRWMapLayerCatalog.dopRGBTileTemplate.contains("LAYERS=nw_dop_rgb"))
         XCTAssertTrue(NRWMapLayerCatalog.dopRGBTileTemplate.contains("SRS=EPSG:3857"))
         XCTAssertTrue(NRWMapLayerCatalog.dopRGBTileTemplate.contains("{bbox-epsg-3857}"))
+    }
+
+    func testMeasurementPointDragSelectsNearestMarkerWithinTouchTarget() {
+        let pointLocations = [
+            CGPoint(x: 100, y: 100),
+            CGPoint(x: 140, y: 100),
+            CGPoint(x: 220, y: 100)
+        ]
+
+        XCTAssertEqual(
+            MapLibreMapView.Coordinator.nearestMeasurementPointIndex(
+                to: CGPoint(x: 132, y: 104),
+                among: pointLocations
+            ),
+            1
+        )
+        XCTAssertNil(
+            MapLibreMapView.Coordinator.nearestMeasurementPointIndex(
+                to: CGPoint(x: 180, y: 150),
+                among: pointLocations
+            )
+        )
     }
 
     func testSignedTurnUsesShortestCompassDirection() {

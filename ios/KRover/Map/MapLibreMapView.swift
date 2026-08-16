@@ -22,6 +22,7 @@ struct MapLibreMapView: UIViewRepresentable {
         map.compassView.compassVisibility = .visible
         map.logoView.isHidden = false
         map.attributionButton.isHidden = false
+        map.maximumZoomLevel = NRWMapLayerCatalog.precisionMaximumZoomLevel
         configureOrnaments(on: map)
         map.setCenter(model.mapCenter, zoomLevel: 18, animated: false)
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
@@ -114,6 +115,7 @@ struct MapLibreMapView: UIViewRepresentable {
         private var selectedAreaEdgeAnnotation: MLNPolyline?
         private var isDraggingMeasurementPoint = false
         private var isPlacingMeasurementPoint = false
+        private var precisionDraggedPointIndex: Int?
         private var placementMagnifier: DragMagnifierView?
         private var placementStem: UIView?
         private var wasNavigating = false
@@ -143,18 +145,28 @@ struct MapLibreMapView: UIViewRepresentable {
             let fingerPoint = recognizer.location(in: map)
             switch recognizer.state {
             case .began:
-                beginPrecisionPlacement(at: fingerPoint, on: map)
-            case .changed:
-                updatePrecisionPlacement(at: fingerPoint, on: map)
-            case .ended:
-                let previewPoint = CGPoint(
-                    x: fingerPoint.x,
-                    y: fingerPoint.y - MeasurementPointAnnotationView.dragPreviewOffset
+                let draggedPointIndex = editableMeasurementPointIndex(
+                    near: fingerPoint,
+                    on: map
                 )
-                endPrecisionPlacement()
-                model.handleMapTap(map.convert(previewPoint, toCoordinateFrom: map))
+                beginPrecisionInteraction(
+                    at: fingerPoint,
+                    on: map,
+                    draggedPointIndex: draggedPointIndex
+                )
+            case .changed:
+                updatePrecisionInteraction(at: fingerPoint)
+            case .ended:
+                let coordinate = precisionCoordinate(for: fingerPoint, on: map)
+                let draggedPointIndex = precisionDraggedPointIndex
+                endPrecisionInteraction()
+                if let draggedPointIndex {
+                    model.moveMeasurementPoint(at: draggedPointIndex, to: coordinate)
+                } else {
+                    model.handleMapTap(coordinate)
+                }
             case .cancelled, .failed:
-                endPrecisionPlacement()
+                endPrecisionInteraction()
                 render(on: map)
             default:
                 break
@@ -163,19 +175,14 @@ struct MapLibreMapView: UIViewRepresentable {
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard gestureRecognizer === precisionPlacementRecognizer else { return true }
-            if let map = mapView {
-                let point = gestureRecognizer.location(in: map)
-                var touchedView = map.hitTest(point, with: nil)
-                while let view = touchedView {
-                    if view is MeasurementPointAnnotationView { return false }
-                    touchedView = view.superview
-                }
-            }
-            return allowsPrecisionPointPlacement
+            guard let map = mapView else { return false }
+            let point = gestureRecognizer.location(in: map)
+            return editableMeasurementPointIndex(near: point, on: map) != nil
+                || allowsPrecisionPointPlacement
         }
 
         func updatePrecisionPlacementAvailability() {
-            let shouldBeEnabled = allowsPrecisionPointPlacement
+            let shouldBeEnabled = allowsPrecisionPointPlacement || allowsMeasurementPointDragging
             if precisionPlacementRecognizer?.isEnabled != shouldBeEnabled {
                 precisionPlacementRecognizer?.isEnabled = shouldBeEnabled
             }
@@ -217,7 +224,7 @@ struct MapLibreMapView: UIViewRepresentable {
                         tileURLTemplates: [NRWMapLayerCatalog.dopRGBTileTemplate],
                         options: [
                             .minimumZoomLevel: 5,
-                            .maximumZoomLevel: 22,
+                            .maximumZoomLevel: NRWMapLayerCatalog.dopNativeMaximumZoomLevel,
                             .tileSize: 256,
                             .attributionHTMLString:
                                 NRWMapLayerCatalog.geobasisAttributionHTML
@@ -345,44 +352,9 @@ struct MapLibreMapView: UIViewRepresentable {
                 ?? MeasurementPointAnnotationView(reuseIdentifier: reuseIdentifier)
             view.configure(
                 pointIndex: measurementPoint.pointIndex,
-                mapView: mapView,
-                isDraggable: model.interactionMode != .elevation,
-                onDragStateChange: { [weak self] state, coordinate in
-                    guard let self else { return }
-                    switch state {
-                    case .starting:
-                        self.isDraggingMeasurementPoint = true
-                    case .ending:
-                        self.isDraggingMeasurementPoint = false
-                        let previewCoordinate = self.dragPreviewCoordinate(
-                            from: coordinate,
-                            on: mapView
-                        )
-                        self.model.moveMeasurementPoint(
-                            at: measurementPoint.pointIndex - 1,
-                            to: previewCoordinate
-                        )
-                    case .canceling:
-                        self.isDraggingMeasurementPoint = false
-                        if let map = self.mapView { self.render(on: map) }
-                    default:
-                        break
-                    }
-                }
+                isEditable: model.interactionMode != .elevation
             )
             return view
-        }
-
-        private func dragPreviewCoordinate(
-            from coordinate: CLLocationCoordinate2D,
-            on mapView: MLNMapView
-        ) -> CLLocationCoordinate2D {
-            let touchPoint = mapView.convert(coordinate, toPointTo: mapView)
-            let previewPoint = CGPoint(
-                x: touchPoint.x,
-                y: touchPoint.y - MeasurementPointAnnotationView.dragPreviewOffset
-            )
-            return mapView.convert(previewPoint, toCoordinateFrom: mapView)
         }
 
         private var allowsPrecisionPointPlacement: Bool {
@@ -396,8 +368,52 @@ struct MapLibreMapView: UIViewRepresentable {
             }
         }
 
-        private func beginPrecisionPlacement(at fingerPoint: CGPoint, on map: MLNMapView) {
-            isPlacingMeasurementPoint = true
+        private var allowsMeasurementPointDragging: Bool {
+            !model.measurementPoints.isEmpty
+                && (model.interactionMode == .distance || model.interactionMode == .area)
+        }
+
+        private func editableMeasurementPointIndex(
+            near fingerPoint: CGPoint,
+            on map: MLNMapView
+        ) -> Int? {
+            guard allowsMeasurementPointDragging else { return nil }
+
+            let pointLocations = model.measurementPoints.map {
+                map.convert($0, toPointTo: map)
+            }
+            return Self.nearestMeasurementPointIndex(
+                to: fingerPoint,
+                among: pointLocations
+            )
+        }
+
+        static func nearestMeasurementPointIndex(
+            to fingerPoint: CGPoint,
+            among pointLocations: [CGPoint],
+            hitRadius: CGFloat = 36
+        ) -> Int? {
+            pointLocations.enumerated()
+                .map { index, point in
+                    let distance = hypot(
+                        point.x - fingerPoint.x,
+                        point.y - fingerPoint.y
+                    )
+                    return (index: index, distance: distance)
+                }
+                .filter { $0.distance <= hitRadius }
+                .min { $0.distance < $1.distance }?
+                .index
+        }
+
+        private func beginPrecisionInteraction(
+            at fingerPoint: CGPoint,
+            on map: MLNMapView,
+            draggedPointIndex: Int?
+        ) {
+            precisionDraggedPointIndex = draggedPointIndex
+            isDraggingMeasurementPoint = draggedPointIndex != nil
+            isPlacingMeasurementPoint = draggedPointIndex == nil
 
             let magnifier = DragMagnifierView(
                 frame: CGRect(x: 0, y: 0, width: 86, height: 86)
@@ -412,11 +428,11 @@ struct MapLibreMapView: UIViewRepresentable {
             map.addSubview(stem)
             placementStem = stem
 
-            updatePrecisionPlacement(at: fingerPoint, on: map)
+            updatePrecisionInteraction(at: fingerPoint)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
 
-        private func updatePrecisionPlacement(at fingerPoint: CGPoint, on map: MLNMapView) {
+        private func updatePrecisionInteraction(at fingerPoint: CGPoint) {
             let previewPoint = CGPoint(
                 x: fingerPoint.x,
                 y: fingerPoint.y - MeasurementPointAnnotationView.dragPreviewOffset
@@ -434,8 +450,21 @@ struct MapLibreMapView: UIViewRepresentable {
             )
         }
 
-        private func endPrecisionPlacement() {
+        private func precisionCoordinate(
+            for fingerPoint: CGPoint,
+            on map: MLNMapView
+        ) -> CLLocationCoordinate2D {
+            let previewPoint = CGPoint(
+                x: fingerPoint.x,
+                y: fingerPoint.y - MeasurementPointAnnotationView.dragPreviewOffset
+            )
+            return map.convert(previewPoint, toCoordinateFrom: map)
+        }
+
+        private func endPrecisionInteraction() {
+            isDraggingMeasurementPoint = false
             isPlacingMeasurementPoint = false
+            precisionDraggedPointIndex = nil
             placementMagnifier?.clearSnapshot()
             placementMagnifier?.removeFromSuperview()
             placementStem?.removeFromSuperview()
@@ -984,26 +1013,15 @@ private final class MeasurementPointAnnotationView: MLNAnnotationView {
     static let reuseIdentifier = "measurement-point"
     static let dragPreviewOffset: CGFloat = 82
 
-    private let dragStem = UIView()
-    private let magnifier = DragMagnifierView(frame: CGRect(x: -21, y: -103, width: 86, height: 86))
     private let targetRing = UIView()
     private let centerDot = UIView()
     private let numberLabel = UILabel()
-    private weak var mapView: MLNMapView?
-    private var magnifierDisplayLink: CADisplayLink?
-    private var onDragStateChange: ((MLNAnnotationViewDragState, CLLocationCoordinate2D) -> Void)?
 
     override init(reuseIdentifier: String?) {
         super.init(reuseIdentifier: reuseIdentifier)
         frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         backgroundColor = .clear
-        isDraggable = true
-
-        dragStem.frame = CGRect(x: 21, y: -17, width: 2, height: 32)
-        dragStem.backgroundColor = UIColor.systemTeal.withAlphaComponent(0.9)
-        dragStem.layer.cornerRadius = 1
-        dragStem.alpha = 0
-        addSubview(dragStem)
+        isDraggable = false
 
         targetRing.frame = CGRect(x: 13, y: 13, width: 18, height: 18)
         targetRing.backgroundColor = UIColor.white.withAlphaComponent(0.9)
@@ -1029,47 +1047,17 @@ private final class MeasurementPointAnnotationView: MLNAnnotationView {
         numberLabel.layer.cornerRadius = 10
         numberLabel.clipsToBounds = true
         addSubview(numberLabel)
-
-        magnifier.alpha = 0
-        addSubview(magnifier)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(
-        pointIndex: Int,
-        mapView: MLNMapView,
-        isDraggable: Bool,
-        onDragStateChange: @escaping (
-            MLNAnnotationViewDragState,
-            CLLocationCoordinate2D
-        ) -> Void
-    ) {
+    func configure(pointIndex: Int, isEditable: Bool) {
         numberLabel.text = String(pointIndex)
-        self.isDraggable = isDraggable
-        accessibilityLabel = isDraggable
+        accessibilityLabel = isEditable
             ? "Messpunkt \(pointIndex). Zum Verschieben lange drücken und ziehen."
             : "Höhenmesspunkt \(pointIndex)."
-        self.mapView = mapView
-        self.onDragStateChange = onDragStateChange
-    }
-
-    override func setDragState(_ dragState: MLNAnnotationViewDragState, animated: Bool) {
-        super.setDragState(dragState, animated: animated)
-        guard let coordinate = annotation?.coordinate else { return }
-        switch dragState {
-        case .starting:
-            beginDragPreview(animated: animated)
-        case .dragging:
-            updateMagnifierForCurrentPosition()
-        case .ending, .canceling:
-            endDragPreview(animated: animated)
-        default:
-            break
-        }
-        onDragStateChange?(dragState, coordinate)
     }
 
     override func prepareForReuse() {
@@ -1078,94 +1066,6 @@ private final class MeasurementPointAnnotationView: MLNAnnotationView {
         numberLabel.transform = .identity
         targetRing.alpha = 1
         numberLabel.alpha = 1
-        dragStem.alpha = 0
-        magnifier.alpha = 0
-        magnifier.clearSnapshot()
-        stopMagnifierTracking()
-        mapView = nil
-        onDragStateChange = nil
-    }
-
-    private func beginDragPreview(animated: Bool) {
-        guard let mapView else { return }
-        magnifier.capture(from: mapView)
-        updateMagnifierForCurrentPosition()
-        startMagnifierTracking()
-        let changes = {
-            self.targetRing.alpha = 0
-            self.numberLabel.alpha = 0
-            self.dragStem.alpha = 1
-            self.magnifier.alpha = 1
-        }
-        guard animated else {
-            changes()
-            return
-        }
-        UIView.animate(
-            withDuration: 0.16,
-            delay: 0,
-            options: [.beginFromCurrentState, .allowUserInteraction],
-            animations: changes
-        )
-    }
-
-    private func updateMagnifierForCurrentPosition() {
-        guard let mapView else { return }
-        let touchPoint = convert(
-            CGPoint(x: bounds.midX, y: bounds.midY),
-            to: mapView
-        )
-        magnifier.showSourcePoint(CGPoint(
-            x: touchPoint.x,
-            y: touchPoint.y - Self.dragPreviewOffset
-        ))
-    }
-
-    private func endDragPreview(animated: Bool) {
-        stopMagnifierTracking()
-        let changes = {
-            self.targetRing.alpha = 1
-            self.numberLabel.alpha = 1
-            self.dragStem.alpha = 0
-            self.magnifier.alpha = 0
-        }
-        let completion: (Bool) -> Void = { _ in self.magnifier.clearSnapshot() }
-        guard animated else {
-            changes()
-            completion(true)
-            return
-        }
-        UIView.animate(
-            withDuration: 0.12,
-            delay: 0,
-            options: [.beginFromCurrentState, .allowUserInteraction],
-            animations: changes,
-            completion: completion
-        )
-    }
-
-    private func startMagnifierTracking() {
-        stopMagnifierTracking()
-        let displayLink = CADisplayLink(
-            target: self,
-            selector: #selector(refreshMagnifierPosition)
-        )
-        displayLink.preferredFrameRateRange = CAFrameRateRange(
-            minimum: 30,
-            maximum: 60,
-            preferred: 60
-        )
-        displayLink.add(to: .main, forMode: .common)
-        magnifierDisplayLink = displayLink
-    }
-
-    private func stopMagnifierTracking() {
-        magnifierDisplayLink?.invalidate()
-        magnifierDisplayLink = nil
-    }
-
-    @objc private func refreshMagnifierPosition() {
-        updateMagnifierForCurrentPosition()
     }
 }
 

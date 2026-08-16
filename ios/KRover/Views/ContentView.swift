@@ -105,16 +105,6 @@ private struct MapScreen: View {
                     mapControls
                 }
                 Spacer(minLength: 12)
-                if let value = model.measurementValue,
-                   sheetLevel == .collapsed {
-                    Text(value)
-                        .font(.system(size: 22, weight: .bold, design: .rounded).monospacedDigit())
-                        .padding(.horizontal, 15)
-                        .padding(.vertical, 9)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay(Capsule().stroke(.white.opacity(0.10), lineWidth: 0.5))
-                        .padding(.bottom, 10)
-                }
                 HStack {
                     if usesCompactLandscapeLayout { Spacer(minLength: 0) }
                     mapBottomSheet(height: sheetHeight(in: geometry.size))
@@ -551,8 +541,16 @@ private struct MapScreen: View {
         switch sheetLevel {
         case .collapsed: return model.boundaryTarget == nil ? 74 : 86
         case .standard:
-            if model.interactionMode == .distance || model.interactionMode == .area
-                || model.interactionMode == .elevation { return min(330, size.height * 0.44) }
+            if model.interactionMode == .distance {
+                let isActiveRoverMeasurement = model.pointCapturePhase.isActive
+                    && model.pointMeasurementSource == .roverRTK
+                return isActiveRoverMeasurement
+                    ? min(390, size.height * 0.52)
+                    : min(255, size.height * 0.38)
+            }
+            if model.interactionMode == .area || model.interactionMode == .elevation {
+                return min(330, size.height * 0.44)
+            }
             if model.boundaryTarget != nil { return min(240, size.height * 0.34) }
             return min(225, size.height * 0.31)
         case .details: return min(540, size.height * 0.64)
@@ -580,7 +578,15 @@ private struct MapScreen: View {
     }
 
     @ViewBuilder private var collapsedSheetContent: some View {
-        if let parcel = model.selectedParcel, let target = model.boundaryTarget {
+        if let value = model.measurementValue {
+            HStack {
+                Label(model.interactionMode.rawValue, systemImage: model.interactionMode.systemImage)
+                    .font(.headline)
+                Spacer()
+                Text(value).font(.title3.bold().monospacedDigit())
+            }
+            .padding(.top, 5)
+        } else if let parcel = model.selectedParcel, let target = model.boundaryTarget {
             navigationCollapsedContent(parcel: parcel, target: target)
         } else if let parcel = model.selectedParcel {
             HStack(spacing: 12) {
@@ -599,14 +605,6 @@ private struct MapScreen: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.top, 2)
-        } else if let value = model.measurementValue {
-            HStack {
-                Label(model.interactionMode.rawValue, systemImage: model.interactionMode.systemImage)
-                    .font(.headline)
-                Spacer()
-                Text(value).font(.title3.bold().monospacedDigit())
-            }
-            .padding(.top, 5)
         } else {
             HStack {
                 Label(model.interactionMode.rawValue, systemImage: model.interactionMode.systemImage)
@@ -753,16 +751,19 @@ private struct MapScreen: View {
             measurementSourcePicker
         }
         measurementSourceWarning
-        Text("Jede abgeschlossene Messung wird als nächster Punkt der Strecke angefügt.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+        measurementValueSummary
         pointCaptureControls(actionEnabled: model.canArmPointMeasurement)
-        Text("Die Streckenlänge wird aus den gemittelten Punkten in ETRS89 / UTM 32N berechnet.")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-        Text("Alternativ lassen sich Testpunkte weiterhin direkt auf der Karte setzen und verschieben.")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+        if sheetLevel == .details {
+            Text("Jede abgeschlossene Messung wird als nächster Punkt der Strecke angefügt.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Die Streckenlänge wird aus den gemittelten Punkten in ETRS89 / UTM 32N berechnet.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("Alternativ lassen sich Testpunkte weiterhin direkt auf der Karte setzen und verschieben.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder private var elevationMeasurementControls: some View {
@@ -773,6 +774,7 @@ private struct MapScreen: View {
             measurementSourcePicker
         }
         measurementSourceWarning
+        measurementValueSummary
 
         Text("Lotrechte Messpunkte aufnehmen; der erste Punkt ist die Höhenreferenz.")
             .font(.caption)
@@ -855,6 +857,7 @@ private struct MapScreen: View {
             measurementSourcePicker
         }
         measurementSourceWarning
+        measurementValueSummary
         Picker("Flächenaufnahme", selection: Binding(
             get: { model.areaCaptureMode },
             set: { model.setAreaCaptureMode($0) }
@@ -965,6 +968,44 @@ private struct MapScreen: View {
             Label("TESTMODUS – keine RTK-Messung", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption.bold())
                 .foregroundStyle(.orange)
+        }
+    }
+
+    @ViewBuilder private var measurementValueSummary: some View {
+        if let value = model.measurementValue {
+            HStack(spacing: 10) {
+                Label(measurementValueLabel, systemImage: measurementValueIcon)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(value)
+                    .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 6)
+                    .background(.blue.opacity(0.86), in: Capsule())
+                    .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 0.5))
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(measurementValueLabel): \(value)")
+        }
+    }
+
+    private var measurementValueLabel: String {
+        switch model.interactionMode {
+        case .distance: return "Gesamtlänge"
+        case .area: return "Fläche"
+        case .elevation: return "Höhendifferenz"
+        case .inspect, .target: return "Messwert"
+        }
+    }
+
+    private var measurementValueIcon: String {
+        switch model.interactionMode {
+        case .distance: return "ruler"
+        case .area: return "square.dashed"
+        case .elevation: return "arrow.up.and.down"
+        case .inspect, .target: return "number"
         }
     }
 
