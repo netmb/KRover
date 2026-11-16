@@ -2138,7 +2138,7 @@ private extension BoundaryTargetKind {
 private extension MapInteractionMode {
     var systemImage: String {
         switch self {
-        case .inspect: return "map"
+        case .inspect: return "pentagon"
         case .target: return "scope"
         case .distance: return "point.topleft.down.to.point.bottomright.curvepath"
         case .area: return "circle.dashed"
@@ -2149,7 +2149,7 @@ private extension MapInteractionMode {
 
     var popupSystemImage: String {
         switch self {
-        case .inspect: return "map.fill"
+        case .inspect: return "pentagon.fill"
         case .target: return "scope"
         case .distance: return "ruler.fill"
         case .area: return "square.dashed"
