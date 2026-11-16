@@ -13,6 +13,11 @@ Rover-Hardware. RTCM-Korrekturen laufen von der App über BLE und UART zum
 LG290P; GNSS-, IMU- und Statusdaten werden in Gegenrichtung an die App
 übertragen.
 
+Flurstück, Grenzpunkte, Messungen und Geländeaufnahmen lassen sich über den
+Teilen-Knopf exportieren: als PDF-Messprotokoll mit Lageplan, als Lageplan-Bild
+(PNG) sowie als CSV, DXF, GeoJSON, KML, GPX und LandXML. Lagekoordinaten werden
+in ETRS89 / UTM 32N (EPSG:25832) ausgegeben, GeoJSON/KML/GPX in WGS84.
+
 <table>
   <tr>
     <td align="center" valign="top" width="33%">

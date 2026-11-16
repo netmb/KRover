@@ -16,6 +16,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var boundaryPointLoadState: BoundaryPointLoadState = .idle
     @Published var measurementPoints: [CLLocationCoordinate2D] = []
     @Published private(set) var areaPointMeasurements: [PointMeasurementResult?] = []
+    /// Averaged measurement behind each distance point (`nil` = placed on the map).
+    @Published private(set) var distancePointMeasurements: [PointMeasurementResult?] = []
     @Published private(set) var elevationPointMeasurements: [PointMeasurementResult] = []
     /// Height survey of the selected parcel (persisted per parcel).
     @Published private(set) var terrainPoints: [TerrainSurveyPoint] = []
@@ -149,6 +151,85 @@ final class AppModel: ObservableObject {
             guard terrainPoints.count >= 2, let terrainModel else { return nil }
             return String(format: "ΔH %.3f m", terrainModel.heightRange)
         }
+    }
+
+    // MARK: - Export
+
+    /// Everything currently on screen that can be exported: selected parcel,
+    /// its boundary points, the running measurement and the parcel's stored
+    /// terrain survey (also outside terrain mode).
+    func makeExportSnapshot() -> SurveyExportSnapshot {
+        let poleLength = poleLengthMeters
+        let parcel = selectedParcel.map { parcel in
+            SurveyExportParcel(
+                id: parcel.id,
+                label: parcel.label,
+                municipality: parcel.municipality,
+                district: parcel.district,
+                section: parcel.section,
+                number: parcel.number,
+                area: parcel.area,
+                updatedAt: parcel.updatedAt,
+                wgs84Rings: parcel.boundaryRings.map(\.wgs84),
+                utmRings: parcel.boundaryRings.map(\.utm)
+            )
+        }
+        let boundaryPoints = cadastralBoundaryPoints.enumerated().map {
+            SurveyExportPoint(boundaryPoint: $0.element, index: $0.offset)
+        }
+
+        var measurement: SurveyExportMeasurement?
+        func points(
+            _ category: SurveyExportPoint.Category,
+            _ results: [PointMeasurementResult?]
+        ) -> [SurveyExportPoint] {
+            measurementPoints.enumerated().map { index, coordinate in
+                SurveyExportPoint(
+                    name: "\(category.namePrefix)\(index + 1)",
+                    category: category,
+                    coordinate: coordinate,
+                    measurement: results.indices.contains(index) ? results[index] : nil,
+                    poleLength: poleLength
+                )
+            }
+        }
+        switch interactionMode {
+        case .distance where !measurementPoints.isEmpty:
+            measurement = SurveyExportMeasurement(kind: .distance, points: points(.distance, distancePointMeasurements))
+        case .area where !measurementPoints.isEmpty:
+            measurement = SurveyExportMeasurement(kind: .area, points: points(.area, areaPointMeasurements))
+        case .elevation where !elevationPointMeasurements.isEmpty:
+            measurement = SurveyExportMeasurement(kind: .elevation, points: points(.elevation, elevationPointMeasurements))
+        default:
+            break
+        }
+
+        var terrain: SurveyExportTerrain?
+        if let selectedParcel {
+            let storedPoints = interactionMode == .terrain
+                ? terrainPoints
+                : terrainStore.load(parcelID: selectedParcel.id)
+            if !storedPoints.isEmpty {
+                terrain = SurveyExportTerrain(
+                    points: storedPoints.enumerated().map {
+                        SurveyExportPoint(terrainPoint: $0.element, name: "G\($0.offset + 1)", poleLength: poleLength)
+                    },
+                    model: interactionMode == .terrain
+                        ? terrainModel
+                        : TerrainModel(points: storedPoints, parcel: selectedParcel)
+                )
+            }
+        }
+
+        return SurveyExportSnapshot(
+            createdAt: Date(),
+            poleLength: poleLength,
+            mapBackground: mapBackgroundLayer,
+            parcel: parcel,
+            boundaryPoints: boundaryPoints,
+            measurement: measurement,
+            terrain: terrain
+        )
     }
 
     // MARK: - Terrain survey
@@ -383,6 +464,7 @@ final class AppModel: ObservableObject {
             interactionMode = .inspect
         case .distance:
             measurementPoints.append(coordinate)
+            distancePointMeasurements.append(nil)
         case .elevation:
             break
         case .terrain:
@@ -405,6 +487,7 @@ final class AppModel: ObservableObject {
         if interactionMode != mode && (mode == .distance || mode == .area || mode == .elevation || mode == .terrain) {
             measurementPoints.removeAll()
             areaPointMeasurements.removeAll()
+            distancePointMeasurements.removeAll()
             elevationPointMeasurements.removeAll()
         }
         if mode == .area, interactionMode != .area {
@@ -432,6 +515,9 @@ final class AppModel: ObservableObject {
         if interactionMode == .elevation, !elevationPointMeasurements.isEmpty {
             elevationPointMeasurements.removeLast()
         }
+        if interactionMode == .distance, !distancePointMeasurements.isEmpty {
+            distancePointMeasurements.removeLast()
+        }
         resetAreaEditing()
     }
 
@@ -444,6 +530,7 @@ final class AppModel: ObservableObject {
         }
         measurementPoints.removeAll()
         areaPointMeasurements.removeAll()
+        distancePointMeasurements.removeAll()
         elevationPointMeasurements.removeAll()
         resetAreaEditing()
     }
@@ -459,6 +546,9 @@ final class AppModel: ObservableObject {
         }
 
         measurementPoints = candidate
+        if interactionMode == .distance, distancePointMeasurements.indices.contains(index) {
+            distancePointMeasurements[index] = nil
+        }
         if interactionMode == .area {
             if areaPointMeasurements.indices.contains(index) {
                 areaPointMeasurements[index] = nil
@@ -1057,6 +1147,7 @@ final class AppModel: ObservableObject {
         case .append:
             if interactionMode == .distance {
                 measurementPoints.append(result.coordinate)
+                distancePointMeasurements.append(result)
                 return true
             }
             if interactionMode == .elevation {

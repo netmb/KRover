@@ -29,6 +29,7 @@ enum MapBackgroundLayer: String, CaseIterable, Identifiable {
 }
 
 enum NRWMapLayerCatalog {
+    static let cadastreStyleURL = URL(string: "https://ogc-api.nrw.de/lika/v1/styles/lika-farbe-web?f=mbs")!
     static let precisionMaximumZoomLevel = 25.5
     static let dopNativeMaximumZoomLevel = 22.0
     static let dopSourceIdentifier = "nrw-dop-rgb-source"

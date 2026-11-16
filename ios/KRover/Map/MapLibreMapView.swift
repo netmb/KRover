@@ -15,8 +15,7 @@ struct MapLibreMapView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
     func makeUIView(context: Context) -> MLNMapView {
-        let styleURL = URL(string: "https://ogc-api.nrw.de/lika/v1/styles/lika-farbe-web?f=mbs")!
-        let map = MLNMapView(frame: .zero, styleURL: styleURL)
+        let map = MLNMapView(frame: .zero, styleURL: NRWMapLayerCatalog.cadastreStyleURL)
         map.delegate = context.coordinator
         map.showsUserLocation = true
         map.compassView.compassVisibility = .visible

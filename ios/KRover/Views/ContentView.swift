@@ -61,6 +61,7 @@ private struct MapScreen: View {
     @State private var iPadShowsParcelDetails = false
     @State private var terrainViewIsPresented = false
     @State private var terrainClearConfirmationIsPresented = false
+    @State private var exportSheet: ExportSheetItem?
     @FocusState private var searchIsFocused: Bool
 
     private var usesCompactLandscapeLayout: Bool { verticalSizeClass == .compact }
@@ -95,6 +96,9 @@ private struct MapScreen: View {
         .fullScreenCover(isPresented: $terrainViewIsPresented) {
             TerrainScreen()
         }
+        .sheet(item: $exportSheet) { item in
+            ExportView(snapshot: item.snapshot)
+        }
         .confirmationDialog(
             "Alle Geländepunkte dieses Flurstücks löschen?",
             isPresented: $terrainClearConfirmationIsPresented,
@@ -105,6 +109,21 @@ private struct MapScreen: View {
         } message: {
             Text("Die gespeicherte Geländeaufnahme wird entfernt und kann nicht wiederhergestellt werden.")
         }
+    }
+
+    private func presentExport() {
+        activeControlPopup = nil
+        searchIsPresented = false
+        searchIsFocused = false
+        exportSheet = ExportSheetItem(snapshot: model.makeExportSnapshot())
+    }
+
+    private var exportMapButton: some View {
+        Button(action: presentExport) {
+            FloatingMapControl(systemImage: "square.and.arrow.up")
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Exportieren")
     }
 
     private func usesIPadLayout(in size: CGSize) -> Bool {
@@ -335,6 +354,8 @@ private struct MapScreen: View {
             }
             .zIndex(1)
             .accessibilityLabel("Kartenlayer: \(model.mapBackgroundLayer.title)")
+
+            exportMapButton
 
             Button {
                 activeControlPopup = nil
@@ -1172,6 +1193,11 @@ private struct MapScreen: View {
             ? !model.terrainPoints.isEmpty
             : !model.measurementPoints.isEmpty
         return HStack(spacing: 10) {
+            Button(action: presentExport) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .disabled(!hasPoints)
+            .accessibilityLabel("Messung exportieren")
             Button("Zurück") { model.undoMeasurementPoint() }
                 .disabled(!hasPoints)
             Button(role: .destructive) {
@@ -1780,6 +1806,8 @@ private extension MapScreen {
 
             iPadLayerButton
 
+            exportMapButton
+
             Button {
                 activeControlPopup = nil
                 model.centerOnCurrentPosition()
@@ -2111,6 +2139,11 @@ private enum MapSheetLevel: Int {
     case collapsed
     case standard
     case details
+}
+
+private struct ExportSheetItem: Identifiable {
+    let id = UUID()
+    let snapshot: SurveyExportSnapshot
 }
 
 private enum MapControlPopup: Equatable {
