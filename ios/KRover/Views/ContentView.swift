@@ -12,6 +12,18 @@ struct ContentView: View {
     @State private var selectedTab = AppTab.map
 
     var body: some View {
+        #if DEBUG
+        if TerrainDemo.isRequested {
+            TerrainDemo.makeView()
+        } else {
+            appContent
+        }
+        #else
+        appContent
+        #endif
+    }
+
+    private var appContent: some View {
         Group {
             switch selectedTab {
             case .map:
@@ -47,6 +59,8 @@ private struct MapScreen: View {
     @State private var activeControlPopup: MapControlPopup?
     @State private var iPadSidebarIsVisible = true
     @State private var iPadShowsParcelDetails = false
+    @State private var terrainViewIsPresented = false
+    @State private var terrainClearConfirmationIsPresented = false
     @FocusState private var searchIsFocused: Bool
 
     private var usesCompactLandscapeLayout: Bool { verticalSizeClass == .compact }
@@ -77,6 +91,19 @@ private struct MapScreen: View {
             .onChange(of: model.selectedParcel?.id) { _, _ in
                 iPadShowsParcelDetails = false
             }
+        }
+        .fullScreenCover(isPresented: $terrainViewIsPresented) {
+            TerrainScreen()
+        }
+        .confirmationDialog(
+            "Alle Geländepunkte dieses Flurstücks löschen?",
+            isPresented: $terrainClearConfirmationIsPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Alle Punkte löschen", role: .destructive) { model.clearMeasurement() }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Die gespeicherte Geländeaufnahme wird entfernt und kann nicht wiederhergestellt werden.")
         }
     }
 
@@ -548,6 +575,9 @@ private struct MapScreen: View {
                     ? min(390, size.height * 0.52)
                     : min(255, size.height * 0.38)
             }
+            if model.interactionMode == .terrain {
+                return min(370, size.height * 0.5)
+            }
             if model.interactionMode == .area || model.interactionMode == .elevation {
                 return min(330, size.height * 0.44)
             }
@@ -564,6 +594,8 @@ private struct MapScreen: View {
             areaMeasurementControls
         } else if model.interactionMode == .elevation {
             elevationMeasurementControls
+        } else if model.interactionMode == .terrain {
+            terrainSurveyControls
         } else if model.interactionMode == .distance {
             distanceMeasurementControls
         } else if model.interactionMode == .target {
@@ -845,6 +877,50 @@ private struct MapScreen: View {
         .scrollIndicators(.hidden)
     }
 
+    @ViewBuilder private var terrainSurveyControls: some View {
+        HStack {
+            Text("Gelände · \(model.terrainPoints.count) Punkte")
+                .font(.system(size: 22, weight: .bold))
+            Spacer()
+            measurementSourcePicker
+        }
+        if let parcel = model.selectedParcel {
+            Label("Flurstück \(parcel.label)", systemImage: "pentagon.fill")
+                .font(.subheadline.bold())
+                .foregroundStyle(.yellow)
+                .lineLimit(1)
+            measurementSourceWarning
+            if model.currentPositionIsInsideTerrainParcel == false {
+                Label("Messposition liegt außerhalb des Flurstücks", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.orange)
+            }
+            measurementValueSummary
+
+            Button {
+                terrainViewIsPresented = true
+            } label: {
+                Label("Geländemodell anzeigen", systemImage: "cube.transparent")
+            }
+            .buttonStyle(FilledCapsuleButtonStyle())
+            .disabled(model.terrainPoints.isEmpty)
+
+            pointCaptureControls(actionEnabled: model.canArmPointMeasurement)
+
+            Text("Punkte verteilt im Flurstück aufnehmen – an Hoch- und Tiefpunkten, Geländekanten und entlang der Grenze. Ab drei Punkten entsteht das Geländemodell. Die Aufnahme wird je Flurstück gespeichert.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("Zuerst ein Flurstück auswählen")
+                .font(.headline)
+            Text("Flurstück auf der Karte antippen, über die Suche laden oder an der aktuellen Position übernehmen.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Flurstück an Position") { model.loadParcelAtCurrentPosition() }
+                .buttonStyle(FilledCapsuleButtonStyle())
+        }
+    }
+
     @ViewBuilder private var areaMeasurementControls: some View {
         HStack {
             Text("Fläche · \(model.measurementPoints.count) Punkte")
@@ -960,7 +1036,10 @@ private struct MapScreen: View {
             }
         }
         .pickerStyle(.menu)
-        .disabled(model.interactionMode == .elevation && !model.elevationPointMeasurements.isEmpty)
+        .disabled(
+            (model.interactionMode == .elevation && !model.elevationPointMeasurements.isEmpty)
+                || (model.interactionMode == .terrain && !model.terrainPoints.isEmpty)
+        )
     }
 
     @ViewBuilder private var measurementSourceWarning: some View {
@@ -996,6 +1075,7 @@ private struct MapScreen: View {
         case .distance: return "Gesamtlänge"
         case .area: return "Fläche"
         case .elevation: return "Höhendifferenz"
+        case .terrain: return "Höhenspanne"
         case .inspect, .target: return "Messwert"
         }
     }
@@ -1005,6 +1085,7 @@ private struct MapScreen: View {
         case .distance: return "ruler"
         case .area: return "square.dashed"
         case .elevation: return "arrow.up.and.down"
+        case .terrain: return "chart.xyaxis.line"
         case .inspect, .target: return "number"
         }
     }
@@ -1058,7 +1139,7 @@ private struct MapScreen: View {
         }
 
         if let result = model.lastPointMeasurement,
-           model.interactionMode == .elevation,
+           model.interactionMode.capturesHeight,
            let verticalSpread = result.verticalSpread,
            let verticalAccuracy = result.estimatedVerticalAccuracy {
             Text(String(
@@ -1087,13 +1168,22 @@ private struct MapScreen: View {
     }
 
     private var measurementEditButtons: some View {
-        HStack(spacing: 10) {
+        let hasPoints = model.interactionMode == .terrain
+            ? !model.terrainPoints.isEmpty
+            : !model.measurementPoints.isEmpty
+        return HStack(spacing: 10) {
             Button("Zurück") { model.undoMeasurementPoint() }
-                .disabled(model.measurementPoints.isEmpty)
-            Button(role: .destructive) { model.clearMeasurement() } label: {
+                .disabled(!hasPoints)
+            Button(role: .destructive) {
+                if model.interactionMode == .terrain {
+                    terrainClearConfirmationIsPresented = true
+                } else {
+                    model.clearMeasurement()
+                }
+            } label: {
                 Image(systemName: "trash")
             }
-            .disabled(model.measurementPoints.isEmpty)
+            .disabled(!hasPoints)
             .accessibilityLabel("Messung löschen")
         }
         .controlSize(.small)
@@ -1367,6 +1457,13 @@ private extension MapScreen {
         availableWidth >= 1_000 ? 352 : 320
     }
 
+    /// Size of the map column next to the (optional) parcel sidebar. Cards
+    /// on the map are sized from this, not from the full screen.
+    func iPadMapAreaSize(in geometry: GeometryProxy) -> CGSize {
+        let sidebarWidth = iPadSidebarIsVisible ? iPadSidebarWidth(for: geometry.size.width) : 0
+        return CGSize(width: max(0, geometry.size.width - sidebarWidth), height: geometry.size.height)
+    }
+
     func iPadMapCanvas(in geometry: GeometryProxy) -> some View {
         ZStack {
             MapLibreMapView(model: model, ornamentLayout: .pad)
@@ -1393,7 +1490,7 @@ private extension MapScreen {
                 Spacer(minLength: 18)
 
                 HStack(alignment: .bottom) {
-                    iPadBottomMapCard(in: geometry.size)
+                    iPadBottomMapCard(in: iPadMapAreaSize(in: geometry))
                     Spacer(minLength: 0)
                 }
             }
@@ -1783,19 +1880,28 @@ private extension MapScreen {
 
     @ViewBuilder func iPadBottomMapCard(in availableSize: CGSize) -> some View {
         if model.interactionMode == .distance || model.interactionMode == .area
-            || model.interactionMode == .elevation || model.interactionMode == .target {
+            || model.interactionMode.capturesHeight || model.interactionMode == .target {
             mapBottomSheet(height: iPadWorkspaceCardHeight(in: availableSize))
-                .frame(width: min(590, availableSize.width * 0.62))
+                .frame(width: iPadCardWidth(preferred: 590, fraction: 0.62, in: availableSize))
         } else if let parcel = model.selectedParcel, let target = model.boundaryTarget {
             iPadNavigationCard(parcel: parcel, target: target)
-                .frame(width: min(500, availableSize.width * 0.58))
+                .frame(width: iPadCardWidth(preferred: 500, fraction: 0.58, in: availableSize))
         } else if let parcel = model.selectedParcel {
             iPadParcelInspector(parcel)
-                .frame(width: min(430, availableSize.width * 0.54))
+                .frame(width: iPadCardWidth(preferred: 430, fraction: 0.54, in: availableSize))
         } else {
             mapBottomSheet(height: 188)
-                .frame(width: min(470, availableSize.width * 0.58))
+                .frame(width: iPadCardWidth(preferred: 470, fraction: 0.58, in: availableSize))
         }
+    }
+
+    /// Card width relative to the map column: a fraction of it on wide maps,
+    /// but never narrower than a readable minimum and never wider than the
+    /// column minus the 20 pt side padding.
+    func iPadCardWidth(preferred: CGFloat, fraction: CGFloat, in availableSize: CGSize) -> CGFloat {
+        let usableWidth = max(0, availableSize.width - 40)
+        let readableMinimum = min(preferred, 400)
+        return min(preferred, usableWidth, max(availableSize.width * fraction, readableMinimum))
     }
 
     func iPadWorkspaceCardHeight(in availableSize: CGSize) -> CGFloat {
@@ -2037,6 +2143,7 @@ private extension MapInteractionMode {
         case .distance: return "point.topleft.down.to.point.bottomright.curvepath"
         case .area: return "circle.dashed"
         case .elevation: return "mountain.2"
+        case .terrain: return "mountain.2.circle"
         }
     }
 
@@ -2047,6 +2154,7 @@ private extension MapInteractionMode {
         case .distance: return "ruler.fill"
         case .area: return "square.dashed"
         case .elevation: return "mountain.2.fill"
+        case .terrain: return "mountain.2.circle.fill"
         }
     }
 }

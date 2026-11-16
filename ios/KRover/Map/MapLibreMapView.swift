@@ -111,6 +111,7 @@ struct MapLibreMapView: UIViewRepresentable {
         private var renderedParcelID: String?
         private var renderedBoundaryPoints: [BoundaryRenderValue] = []
         private var renderedBackgroundLayer: MapBackgroundLayer?
+        private var renderedTerrainRevision: UUID?
         private var ownedAnnotations: [MLNAnnotation] = []
         private var selectedAreaEdgeAnnotation: MLNPolyline?
         private var isDraggingMeasurementPoint = false
@@ -251,6 +252,7 @@ struct MapLibreMapView: UIViewRepresentable {
         func render(on map: MLNMapView) {
             guard !isDraggingMeasurementPoint, !isPlacingMeasurementPoint else { return }
             renderParcel(on: map)
+            renderTerrainOverlay(on: map)
             renderMeasurementShape(on: map)
             renderNavigationRoute(on: map)
             if !ownedAnnotations.isEmpty { map.removeAnnotations(ownedAnnotations) }
@@ -297,6 +299,21 @@ struct MapLibreMapView: UIViewRepresentable {
                     } else {
                         annotation.title = "P\(index + 1) · manueller Testpunkt"
                     }
+                    ownedAnnotations.append(annotation)
+                }
+            }
+            if model.interactionMode == .terrain {
+                for (index, point) in model.terrainPoints.enumerated() {
+                    let annotation = MeasurementPointAnnotation()
+                    annotation.coordinate = point.coordinate
+                    annotation.pointIndex = index + 1
+                    let relative = model.terrainHeightAboveLowest(at: index) ?? 0
+                    annotation.title = String(
+                        format: "P%d · %.3f m · %+.3f m über Tiefpunkt",
+                        index + 1,
+                        point.altitudeMSL,
+                        relative
+                    )
                     ownedAnnotations.append(annotation)
                 }
             }
@@ -352,7 +369,7 @@ struct MapLibreMapView: UIViewRepresentable {
                 ?? MeasurementPointAnnotationView(reuseIdentifier: reuseIdentifier)
             view.configure(
                 pointIndex: measurementPoint.pointIndex,
-                isEditable: model.interactionMode != .elevation
+                isEditable: !model.interactionMode.capturesHeight
             )
             return view
         }
@@ -363,7 +380,7 @@ struct MapLibreMapView: UIViewRepresentable {
                 return true
             case .area:
                 return model.areaCaptureMode == .append
-            case .inspect, .target, .elevation:
+            case .inspect, .target, .elevation, .terrain:
                 return false
             }
         }
@@ -645,6 +662,44 @@ struct MapLibreMapView: UIViewRepresentable {
             line.lineWidth = NSExpression(forConstantValue: 2.0)
             line.lineDashPattern = NSExpression(forConstantValue: [2, 2])
             style.addLayer(line)
+        }
+
+        /// Colored height raster of the terrain survey, draped over the parcel.
+        private func renderTerrainOverlay(on map: MLNMapView) {
+            guard let style = map.style else { return }
+            let sourceID = "terrain-height-source"
+            let layerID = "terrain-height-layer"
+            let terrain = model.interactionMode == .terrain ? model.terrainModel : nil
+            let revision = terrain?.canInterpolate == true ? terrain?.revision : nil
+            let sourceMissing = revision != nil && style.source(withIdentifier: sourceID) == nil
+            guard revision != renderedTerrainRevision || sourceMissing else { return }
+            renderedTerrainRevision = revision
+
+            if let layer = style.layer(withIdentifier: layerID) { style.removeLayer(layer) }
+            if let source = style.source(withIdentifier: sourceID) { style.removeSource(source) }
+            guard let terrain, revision != nil,
+                  let raster = terrain.makeRaster(maxDimension: 768) else { return }
+
+            let bounds = raster.bounds
+            let quad = MLNCoordinateQuad(
+                topLeft: terrain.coordinate(of: SIMD2(bounds.minX, bounds.maxY)),
+                bottomLeft: terrain.coordinate(of: SIMD2(bounds.minX, bounds.minY)),
+                bottomRight: terrain.coordinate(of: SIMD2(bounds.maxX, bounds.minY)),
+                topRight: terrain.coordinate(of: SIMD2(bounds.maxX, bounds.maxY))
+            )
+            let source = MLNImageSource(
+                identifier: sourceID,
+                coordinateQuad: quad,
+                image: UIImage(cgImage: raster.image)
+            )
+            style.addSource(source)
+            let layer = MLNRasterStyleLayer(identifier: layerID, source: source)
+            layer.rasterOpacity = NSExpression(forConstantValue: 0.8)
+            if let parcelLine = style.layer(withIdentifier: "selected-parcel-line") {
+                style.insertLayer(layer, below: parcelLine)
+            } else {
+                style.addLayer(layer)
+            }
         }
 
         private func renderMeasurementShape(on map: MLNMapView) {

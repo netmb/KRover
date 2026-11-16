@@ -17,6 +17,9 @@ final class AppModel: ObservableObject {
     @Published var measurementPoints: [CLLocationCoordinate2D] = []
     @Published private(set) var areaPointMeasurements: [PointMeasurementResult?] = []
     @Published private(set) var elevationPointMeasurements: [PointMeasurementResult] = []
+    /// Height survey of the selected parcel (persisted per parcel).
+    @Published private(set) var terrainPoints: [TerrainSurveyPoint] = []
+    @Published private(set) var terrainModel: TerrainModel?
     @Published private(set) var areaCaptureMode: AreaCaptureMode = .append
     @Published private(set) var selectedAreaEdgeIndex: Int?
     @Published private(set) var areaControlMeasurement: AreaControlMeasurement?
@@ -70,6 +73,10 @@ final class AppModel: ObservableObject {
     private var parcelLoadTask: Task<Void, Never>?
     private var parcelLoadGeneration = 0
     private var boundaryPointTask: Task<Void, Never>?
+    private let terrainStore = TerrainSurveyStore()
+    /// Points may lie this far outside the cadastral boundary (pole on the
+    /// boundary line, GNSS noise) and still count as inside the parcel.
+    static let terrainBoundaryTolerance = 0.3
 
     private enum PendingPointAction {
         case append
@@ -138,7 +145,67 @@ final class AppModel: ObservableObject {
             guard elevationPointMeasurements.count >= 2,
                   let summary = elevationSummary else { return nil }
             return String(format: "ΔH %.3f m", summary.heightRange)
+        case .terrain:
+            guard terrainPoints.count >= 2, let terrainModel else { return nil }
+            return String(format: "ΔH %.3f m", terrainModel.heightRange)
         }
+    }
+
+    // MARK: - Terrain survey
+
+    /// `nil` when no parcel is selected or no position is available.
+    var currentPositionIsInsideTerrainParcel: Bool? {
+        guard selectedParcel != nil, let coordinate = currentPointMeasurementCoordinate else { return nil }
+        return isInsideSelectedParcel(coordinate)
+    }
+
+    func terrainHeightAboveLowest(at index: Int) -> Double? {
+        guard terrainPoints.indices.contains(index), let terrainModel else { return nil }
+        return terrainPoints[index].altitudeMSL - terrainModel.minHeight
+    }
+
+    func removeTerrainPoint(id: UUID) {
+        cancelPointCapture()
+        terrainPoints.removeAll { $0.id == id }
+        terrainPointsDidChange()
+    }
+
+    private func isInsideSelectedParcel(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        guard let parcel = selectedParcel else { return false }
+        let utm = UTM32Projection.project(coordinate)
+        let point = SIMD2(utm.easting, utm.northing)
+        let rings = parcel.boundaryRings.map { ring in ring.utm.map { SIMD2($0.easting, $0.northing) } }
+        return TerrainGeometry.contains(point, rings: rings)
+            || TerrainGeometry.distanceToBoundary(point, rings: rings) <= Self.terrainBoundaryTolerance
+    }
+
+    private func reloadTerrainSurvey() {
+        guard let parcel = selectedParcel else {
+            terrainPoints = []
+            terrainModel = nil
+            return
+        }
+        terrainPoints = terrainStore.load(parcelID: parcel.id)
+        rebuildTerrainModel()
+    }
+
+    private func terrainPointsDidChange() {
+        rebuildTerrainModel()
+        guard let parcel = selectedParcel else { return }
+        do {
+            try terrainStore.save(terrainPoints, parcelID: parcel.id, parcelLabel: parcel.label)
+        } catch {
+            errorMessage = "Die Geländepunkte konnten nicht gespeichert werden: \(error.localizedDescription)"
+        }
+    }
+
+    private func rebuildTerrainModel() {
+        // Built even without points so the terrain view can show the parcel outline.
+        guard let parcel = selectedParcel else {
+            terrainModel = nil
+            return
+        }
+        terrainModel = TerrainModel(points: terrainPoints, parcel: parcel)
     }
 
     var elevationSummary: ElevationMeasurementSummary? {
@@ -209,7 +276,7 @@ final class AppModel: ObservableObject {
 
     var pointCaptureActionLabel: String {
         if pointCapturePhase.isActive { return "Messung abbrechen" }
-        if interactionMode == .distance || interactionMode == .elevation {
+        if interactionMode == .distance || interactionMode.capturesHeight {
             return pointMeasurementSource.isTest ? "GPS-Testpunkt messen" : "Messpunkt erfassen"
         }
         switch areaCaptureMode {
@@ -318,6 +385,9 @@ final class AppModel: ObservableObject {
             measurementPoints.append(coordinate)
         case .elevation:
             break
+        case .terrain:
+            // Tapping only picks the parcel; afterwards points come from measurements.
+            if selectedParcel == nil { loadParcel(at: coordinate) }
         case .area:
             switch areaCaptureMode {
             case .append:
@@ -332,7 +402,7 @@ final class AppModel: ObservableObject {
 
     func setInteractionMode(_ mode: MapInteractionMode) {
         cancelPointCapture()
-        if interactionMode != mode && (mode == .distance || mode == .area || mode == .elevation) {
+        if interactionMode != mode && (mode == .distance || mode == .area || mode == .elevation || mode == .terrain) {
             measurementPoints.removeAll()
             areaPointMeasurements.removeAll()
             elevationPointMeasurements.removeAll()
@@ -341,11 +411,20 @@ final class AppModel: ObservableObject {
             resetAreaEditing()
             areaCaptureMode = .append
         }
+        let entersTerrain = mode == .terrain && interactionMode != .terrain
         interactionMode = mode
+        if entersTerrain { reloadTerrainSurvey() }
     }
 
     func undoMeasurementPoint() {
         cancelPointCapture()
+        if interactionMode == .terrain {
+            if !terrainPoints.isEmpty {
+                terrainPoints.removeLast()
+                terrainPointsDidChange()
+            }
+            return
+        }
         if !measurementPoints.isEmpty { measurementPoints.removeLast() }
         if interactionMode == .area, !areaPointMeasurements.isEmpty {
             areaPointMeasurements.removeLast()
@@ -358,6 +437,11 @@ final class AppModel: ObservableObject {
 
     func clearMeasurement() {
         cancelPointCapture()
+        if interactionMode == .terrain {
+            terrainPoints.removeAll()
+            terrainPointsDidChange()
+            return
+        }
         measurementPoints.removeAll()
         areaPointMeasurements.removeAll()
         elevationPointMeasurements.removeAll()
@@ -408,7 +492,17 @@ final class AppModel: ObservableObject {
             cancelPointCapture()
             return
         }
-        if interactionMode == .distance || interactionMode == .elevation {
+        if interactionMode == .terrain {
+            guard selectedParcel != nil else {
+                errorMessage = "Bitte zuerst ein Flurstück auswählen."
+                return
+            }
+            if currentPositionIsInsideTerrainParcel == false {
+                errorMessage = "Die aktuelle Position liegt außerhalb des gewählten Flurstücks."
+                return
+            }
+        }
+        if interactionMode == .distance || interactionMode.capturesHeight {
             beginPointCapture(action: .append)
             return
         }
@@ -530,7 +624,10 @@ final class AppModel: ObservableObject {
         guard selectedParcel?.id == parcel.id else { return }
 
         boundaryPointTask?.cancel()
+        cancelPointCapture()
         selectedParcel = nil
+        terrainPoints = []
+        terrainModel = nil
         clearTarget()
         cadastralBoundaryPoints = []
         boundaryPointLoadState = .idle
@@ -616,6 +713,10 @@ final class AppModel: ObservableObject {
         if recentParcels.count > 8 { recentParcels.removeLast(recentParcels.count - 8) }
         clearTarget()
         loadBoundaryPoints(for: parcel)
+        if interactionMode == .terrain {
+            cancelPointCapture()
+            reloadTerrainSurvey()
+        }
         if !parcel.wgs84Vertices.isEmpty {
             let latitude = parcel.wgs84Vertices.map(\.latitude).reduce(0, +) / Double(parcel.wgs84Vertices.count)
             let longitude = parcel.wgs84Vertices.map(\.longitude).reduce(0, +) / Double(parcel.wgs84Vertices.count)
@@ -770,7 +871,7 @@ final class AppModel: ObservableObject {
                 : "Noch keine iPhone-GPS-Position verfügbar."
             return
         }
-        if interactionMode == .elevation {
+        if interactionMode.capturesHeight {
             let altitude = pointMeasurementSource == .roverRTK
                 ? recentRoverPosition?.altitude
                 : phoneLocation.location?.altitude
@@ -801,7 +902,7 @@ final class AppModel: ObservableObject {
     }
 
     private func makePointAccumulator() -> PointMeasurementAccumulator {
-        let configuration = interactionMode == .elevation
+        let configuration = interactionMode.capturesHeight
             ? PointMeasurementAccumulator.Configuration.elevation(
                 for: pointMeasurementSource,
                 poleLengthMeters: poleLengthMeters
@@ -847,7 +948,7 @@ final class AppModel: ObservableObject {
             pointCaptureStatus = "\(pointCaptureSampleCount)/\(pointCaptureTargetSampleCount) gespeichert · warte auf RTK Fixed"
             return
         }
-        guard interactionMode != .elevation || position.altitude != nil else {
+        guard !interactionMode.capturesHeight || position.altitude != nil else {
             pointCapturePhase = .armed
             pointCaptureStatus = "Höhenwert fehlt · warte auf GGA"
             return
@@ -928,7 +1029,7 @@ final class AppModel: ObservableObject {
         pointCapturePhase = .completed
         pointCaptureProgress = 1
         pointCaptureSampleCount = result.sampleCount
-        if interactionMode == .elevation,
+        if interactionMode.capturesHeight,
            let verticalSpread = result.verticalSpread,
            let verticalAccuracy = result.estimatedVerticalAccuracy {
             pointCaptureStatus = String(
@@ -970,6 +1071,23 @@ final class AppModel: ObservableObject {
                 }
                 measurementPoints.append(result.coordinate)
                 elevationPointMeasurements.append(result)
+                return true
+            }
+            if interactionMode == .terrain {
+                guard let point = TerrainSurveyPoint(measurement: result) else {
+                    errorMessage = "Die Höhenmessung enthielt nicht genügend gültige Höhenwerte."
+                    return false
+                }
+                guard isInsideSelectedParcel(result.coordinate) else {
+                    errorMessage = "Der gemessene Punkt liegt außerhalb des gewählten Flurstücks und wurde verworfen."
+                    return false
+                }
+                if let first = terrainPoints.first, first.isTest != point.isTest {
+                    errorMessage = "RTK- und iPhone-Testpunkte lassen sich nicht in einem Geländemodell mischen."
+                    return false
+                }
+                terrainPoints.append(point)
+                terrainPointsDidChange()
                 return true
             }
             let previousCount = measurementPoints.count

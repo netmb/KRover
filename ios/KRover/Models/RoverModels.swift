@@ -283,8 +283,12 @@ enum MapInteractionMode: String, CaseIterable, Identifiable {
     case distance = "Strecke"
     case area = "Fläche"
     case elevation = "Höhe"
+    case terrain = "Gelände"
 
     var id: String { rawValue }
+
+    /// Modes whose point captures require a valid height.
+    var capturesHeight: Bool { self == .elevation || self == .terrain }
 }
 
 enum AreaCaptureMode: String, CaseIterable, Identifiable {
